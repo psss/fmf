@@ -469,7 +469,16 @@ class Tree(object):
                         fullpath, error)))
             else:
                 plugin = get_plugin_for_file(fullpath)
-                data = plugin().get_data(fullpath)
+                log.debug("Used plugin {}".format(plugin))
+                if plugin.file_patters and any(filter(lambda x: re.search(x, fullpath), plugin.file_patters)):
+                    log.info("Matched patters {}".format(plugin.file_patters))
+                    data = plugin().get_data(fullpath)
+                    # ignore results of output if there is None
+                    if data is None:
+                        continue
+                else:
+                    log.debug("Does not match patters {}".format(plugin.file_patters))
+                    continue
             log.data(pretty(data))
             # Handle main.fmf as data for self
             if filename == MAIN:

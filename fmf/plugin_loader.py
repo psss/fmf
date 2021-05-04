@@ -12,13 +12,20 @@ class Plugin:
     """
     # you have to define extension list as class attribute e.g. [".py"]
     extensions = list()
+    file_patters = list()
 
     def get_data(self, filename):
+        """
+        return python dictionary representation of metadata inside file (FMF structure)
+        """
         raise NotImplementedError("Define own impementation")
 
     def put_data(
             self, filename, hierarchy, data, append_dict, modified_dict,
             deleted_items):
+        """
+        Write data in dictionary representation back to file
+        """
         raise NotImplementedError("Define own impementation")
 
 

@@ -15,6 +15,7 @@ _ = FMF
 
 class Pytest(Plugin):
     extensions = [".py"]
+    file_patters=["test.*"]
 
     @staticmethod
     def update_data(store_dict, func, config):
@@ -55,7 +56,9 @@ class Pytest(Plugin):
         process.start()
         out = process_queue.get()
         process.join()
-        return out
+        if out:
+            return out
+        return None
 
     @staticmethod
     def import_test_module(filename):

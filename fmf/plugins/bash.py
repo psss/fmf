@@ -6,6 +6,7 @@ import os
 
 class Bash(Plugin):
     extensions = [".sh"]
+    file_patters = ["test.*"]
 
     @staticmethod
     def update_data(filename, pattern="^#.*:FMF:"):
