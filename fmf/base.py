@@ -16,15 +16,9 @@ import fmf.context
 import fmf.utils as utils
 from io import open
 from fmf.utils import log, dict_to_yaml
+from fmf.constants import SUFFIX, IGNORED_DIRECTORIES, MAIN
+from fmf.plugin_loader import get_suffixes, get_plugin_for_file
 from pprint import pformat as pretty
-
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-#  Constants
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-SUFFIX = ".fmf"
-MAIN = "main" + SUFFIX
-IGNORED_DIRECTORIES = ['/dev', '/proc', '/sys']
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #  YAML
@@ -92,10 +86,10 @@ class Tree(object):
         self.original_data = dict()
         self._commit = None
         self._raw_data = dict()
+        self._plugin = None
         # Track whether the data dictionary has been updated
         # (needed to prevent removing nodes with an empty dict).
         self._updated = False
-
         # Special handling for top parent
         if self.parent is None:
             self.name = "/"
@@ -415,7 +409,7 @@ class Tree(object):
             return default
         return data
 
-    def child(self, name, data, source=None):
+    def child(self, name, data, source=None, plugin=None):
         """ Create or update child with given data """
         try:
             # Update data from a dictionary (handle empty nodes)
@@ -430,6 +424,7 @@ class Tree(object):
         if source is not None:
             self.children[name].sources.append(source)
             self.children[name]._raw_data = copy.deepcopy(data)
+            self.children[name]._plugin = plugin
 
     def grow(self, path):
         """
@@ -453,7 +448,7 @@ class Tree(object):
             return
         # Investigate main.fmf as the first file (for correct inheritance)
         filenames = sorted(
-            [filename for filename in filenames if filename.endswith(SUFFIX)])
+            [filename for filename in filenames if any(filter(filename.endswith, get_suffixes()))])
         try:
             filenames.insert(0, filenames.pop(filenames.index(MAIN)))
         except ValueError:
@@ -464,12 +459,26 @@ class Tree(object):
                 continue
             fullpath = os.path.abspath(os.path.join(dirpath, filename))
             log.info("Checking file {0}".format(fullpath))
-            try:
-                with open(fullpath, encoding='utf-8') as datafile:
-                    data = yaml.load(datafile, Loader=YamlLoader)
-            except yaml.error.YAMLError as error:
-                    raise(utils.FileError("Failed to parse '{0}'.\n{1}".format(
-                            fullpath, error)))
+            if fullpath.endswith(SUFFIX):
+                plugin = None
+                try:
+                    with open(fullpath, encoding='utf-8') as datafile:
+                        data = yaml.load(datafile, Loader=YamlLoader)
+                except yaml.error.YAMLError as error:
+                    raise (utils.FileError("Failed to parse '{0}'.\n{1}".format(
+                        fullpath, error)))
+            else:
+                plugin = get_plugin_for_file(fullpath)
+                log.debug("Used plugin {}".format(plugin))
+                if plugin.file_patters and any(filter(lambda x: re.search(x, fullpath), plugin.file_patters)):
+                    log.info("Matched patters {}".format(plugin.file_patters))
+                    data = plugin().get_data(fullpath)
+                    # ignore results of output if there is None
+                    if data is None:
+                        continue
+                else:
+                    log.debug("Does not match patters {}".format(plugin.file_patters))
+                    continue
             log.data(pretty(data))
             # Handle main.fmf as data for self
             if filename == MAIN:
@@ -478,7 +487,7 @@ class Tree(object):
                 self.update(data)
             # Handle other *.fmf files as children
             else:
-                self.child(os.path.splitext(filename)[0], data, fullpath)
+                self.child(os.path.splitext(filename)[0], data, fullpath, plugin=plugin)
         # Explore every child directory (ignore hidden dirs and subtrees)
         for dirname in sorted(dirnames):
             if dirname.startswith("."):
@@ -670,7 +679,7 @@ class Tree(object):
             node_data = node_data[key]
 
         # The full raw data were read from the last source
-        return node_data, full_data, node.sources[-1]
+        return node_data, full_data, node.sources[-1], hierarchy, node._plugin
 
     def __enter__(self):
         """
@@ -695,13 +704,31 @@ class Tree(object):
         export to yaml does not preserve this information. The feature
         is experimental and can be later modified, use at your own risk.
         """
-        return self._locate_raw_data()[0]
+        item = self._locate_raw_data()[0]
+        self._raw_data_before_modification = copy.deepcopy(item)
+        return item
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """ Experimental: Store modified metadata to disk """
-        _, full_data, source = self._locate_raw_data()
-        with open(source, "w", encoding='utf-8') as file:
-            file.write(dict_to_yaml(full_data))
+        node_data, full_data, source, hierarchy, plugin = self._locate_raw_data()
+        # find differences for plugins, to be able to  work effectively
+        append = dict()
+        modified = dict()
+        for k, v in node_data.items():
+            if k not in self._raw_data_before_modification:
+                append[k] = v
+            elif self._raw_data_before_modification[k] != v:
+                modified[k] = v
+        deleted = list()
+        for k in self._raw_data_before_modification:
+            if k not in node_data:
+                deleted.append(k)
+
+        if plugin is None:
+            with open(source, "w", encoding='utf-8') as file:
+                file.write(dict_to_yaml(full_data))
+        else:
+            plugin().put_data(source, hierarchy, node_data, append, modified, deleted)
 
     def __getitem__(self, key):
         """
